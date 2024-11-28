@@ -1,0 +1,9 @@
+[package]
+name = "vol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+statrs = "0.17.1"
+tokio-test = "0.4.4"
+yahoo_finance_api = "2.4.0"
