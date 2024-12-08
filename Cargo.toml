@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.93"
 chrono = "0.4.38"
-polars = { version = "0.44.2", features = ["lazy"] }
+num-format = "0.4.4"
 statrs = "0.17.1"
+tabled = { version = "0.17.0" }
 tokio-test = "0.4.4"
 yahoo_finance_api = "2.4.0"
