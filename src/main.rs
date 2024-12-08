@@ -1,12 +1,13 @@
 use anyhow::Result;
 use chrono::prelude::*;
-use polars::prelude::*;
+use num_format::{Locale, ToFormattedString};
 use statrs::statistics::Statistics;
-use yahoo_finance_api::{self as yahoo, Decimal, Quote};
+use tabled::{builder::Builder, settings::Style};
+use yahoo_finance_api::{self as yahoo, Quote};
 
 const INTERVAL: &str = "1d";
-const RANGE: &str = "1mo";
-const TICKER: &str = "MSTR";
+const RANGE: &str = "7d";
+const TICKER: &str = "TSLA";
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
 
 fn main() -> Result<()> {
@@ -22,34 +23,31 @@ fn main() -> Result<()> {
     let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
 
     print_quotes(&quotes);
-    println!("std dev of returns: {}", std_dev);
-    println!("annualized volatility: {}", annualized_vol);
+    println!("std dev of returns: {:.4}", std_dev);
+    println!("annualized volatility: {:.2}", annualized_vol);
 
     Ok(())
 }
 
 fn print_quotes(quotes: &[Quote]) {
-    let dates: Vec<NaiveDate> = quotes
-        .iter()
-        .map(|q| {
+    let mut builder = Builder::default();
+    builder.push_record(["timestamp", "open", "high", "low", "volume", "close"]);
+    for q in quotes {
+        builder.push_record([
             DateTime::from_timestamp(q.timestamp as i64, 0)
                 .unwrap()
                 .date_naive()
-        })
-        .collect();
+                .to_string(),
+            format!("{:.2}", q.open),
+            format!("{:.2}", q.high),
+            format!("{:.2}", q.low),
+            q.volume.to_formatted_string(&Locale::en),
+            format!("{:.2}", q.close),
+        ]);
+    }
+    let table = builder.build().with(Style::sharp()).to_string();
 
-    let df: DataFrame = df!(
-        "timestamp" => dates,
-        "open" => quotes.iter().map(|q| q.open).collect::<Vec<Decimal>>(),
-        "high" => quotes.iter().map(|q| q.high).collect::<Vec<Decimal>>(),
-        "low" => quotes.iter().map(|q| q.low).collect::<Vec<Decimal>>(),
-        "volume" => quotes.iter().map(|q| q.volume).collect::<Vec<u64>>(),
-        "close" => quotes.iter().map(|q| q.close).collect::<Vec<Decimal>>(),
-
-    )
-    .unwrap();
-
-    println!("{}", df);
+    println!("{}", table);
 }
 
 fn get_quotes(ticker: &str, interval: &str, range: &str) -> Result<Vec<Quote>> {
