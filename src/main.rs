@@ -1,30 +1,42 @@
 use anyhow::Result;
 use chrono::prelude::*;
+use clap::Parser;
 use num_format::{Locale, ToFormattedString};
 use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
 use yahoo_finance_api::{self as yahoo, Quote};
 
 const INTERVAL: &str = "1d";
-const RANGE: &str = "7d";
-const TICKER: &str = "TSLA";
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
 
-fn main() -> Result<()> {
-    let quotes = get_quotes(TICKER, INTERVAL, RANGE)?;
-    let returns = calc_returns(&quotes);
-    let mean_return = returns.as_slice().mean();
-    let std_dev = returns
-        .iter()
-        .map(|r| r - mean_return)
-        .collect::<Vec<f64>>()
-        .as_slice()
-        .std_dev();
-    let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(short, long, required = true, help = "ticker symbol such as MSFT")]
+    ticker: String,
+    #[arg(short, long, required = true, help = "range in days")]
+    range: u8,
+}
 
+fn main() -> Result<()> {
+    let ags = Args::parse();
+    let range = format!("{}d", ags.range);
+    let quotes = get_quotes(&ags.ticker, INTERVAL, &range)?;
     print_quotes(&quotes);
-    println!("std dev of returns: {:.4}", std_dev);
-    println!("annualized volatility: {:.2}", annualized_vol);
+
+    if quotes.len() >= 3 {
+        // need at least 3 data points to calculate std dev
+        let returns = calc_returns(&quotes);
+        let mean_return = returns.as_slice().mean();
+        let std_dev = returns
+            .iter()
+            .map(|r| r - mean_return)
+            .collect::<Vec<f64>>()
+            .as_slice()
+            .std_dev();
+        let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
+        println!("std dev of returns: {:.4}", std_dev);
+        println!("annualized volatility: {:.2}", annualized_vol);
+    }
 
     Ok(())
 }
