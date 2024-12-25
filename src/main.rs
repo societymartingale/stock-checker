@@ -14,12 +14,12 @@ struct Args {
     #[arg(short, long, required = true, help = "ticker symbol such as MSFT")]
     ticker: String,
     #[arg(short, long, required = true, help = "range in days")]
-    range: u8,
+    days: u8,
 }
 
 fn main() -> Result<()> {
     let ags = Args::parse();
-    let range = format!("{}d", ags.range);
+    let range = format!("{}d", ags.days);
     let quotes = get_quotes(&ags.ticker, INTERVAL, &range)?;
     print_quotes(&quotes);
 
@@ -43,17 +43,17 @@ fn main() -> Result<()> {
 
 fn print_quotes(quotes: &[Quote]) {
     let mut builder = Builder::default();
-    builder.push_record(["timestamp", "open", "high", "low", "volume", "close"]);
+    builder.push_record(["Date", "Volume", "Open", "High", "Low", "Close"]);
     for q in quotes {
         builder.push_record([
             DateTime::from_timestamp(q.timestamp as i64, 0)
                 .unwrap()
                 .date_naive()
                 .to_string(),
+            q.volume.to_formatted_string(&Locale::en),
             format!("{:.2}", q.open),
             format!("{:.2}", q.high),
             format!("{:.2}", q.low),
-            q.volume.to_formatted_string(&Locale::en),
             format!("{:.2}", q.close),
         ]);
     }
