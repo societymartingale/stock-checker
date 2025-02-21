@@ -13,7 +13,13 @@ const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
 struct Args {
     #[arg(short, long, required = true, help = "ticker symbol such as MSFT")]
     ticker: String,
-    #[arg(short, long, required = true, help = "range in days")]
+    #[arg(
+        short,
+        long,
+        required = false,
+        default_value_t = 5,
+        help = "range in days"
+    )]
     days: u8,
 }
 
