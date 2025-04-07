@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.96"
-chrono = "0.4.39"
-clap = { version = "4.5.30", features = ["derive"] }
+anyhow = "1.0.97"
+chrono = "0.4.40"
+clap = { version = "4.5.35", features = ["derive"] }
 num-format = "0.4.4"
 statrs = "0.18.0"
 tabled = { version = "0.18.0" }

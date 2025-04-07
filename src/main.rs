@@ -27,11 +27,11 @@ fn main() -> Result<()> {
     let ags = Args::parse();
     let range = format!("{}d", ags.days);
     let quotes = get_quotes(&ags.ticker, INTERVAL, &range)?;
-    print_quotes(&quotes);
+    let returns = calc_returns(&quotes);
+    print_quotes(&quotes, &returns);
 
     if quotes.len() >= 3 {
         // need at least 3 data points to calculate std dev
-        let returns = calc_returns(&quotes);
         let mean_return = returns.as_slice().mean();
         let std_dev = returns
             .iter()
@@ -47,10 +47,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn print_quotes(quotes: &[Quote]) {
+fn print_quotes(quotes: &[Quote], returns: &[f64]) {
     let mut builder = Builder::default();
-    builder.push_record(["Date", "Volume", "Open", "High", "Low", "Close"]);
-    for q in quotes {
+    builder.push_record(["Date", "Volume", "Open", "High", "Low", "Close", "Return %"]);
+    for (idx, q) in quotes.iter().enumerate() {
+        let mut ret_fmt = "".to_string();
+        if idx > 0 {
+            let ret = returns[idx - 1] * 100.0;
+            if ret < 0.0 {
+                ret_fmt = format!("{:.2}", ret);
+            } else {
+                ret_fmt = format!(" {:.2}", ret);
+            }
+        }
+
         builder.push_record([
             DateTime::from_timestamp(q.timestamp as i64, 0)
                 .unwrap()
@@ -61,6 +71,7 @@ fn print_quotes(quotes: &[Quote]) {
             format!("{:.2}", q.high),
             format!("{:.2}", q.low),
             format!("{:.2}", q.close),
+            ret_fmt,
         ]);
     }
     let table = builder.build().with(Style::sharp()).to_string();
