@@ -17,7 +17,7 @@ struct Args {
         short,
         long,
         required = false,
-        default_value_t = 5,
+        default_value_t = 10,
         help = "range in days"
     )]
     days: u8,
@@ -29,6 +29,10 @@ fn main() -> Result<()> {
     let quotes = get_quotes(&ags.ticker, INTERVAL, &range)?;
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
+    if quotes.len() >= 2 {
+        let pct_chg = 100.0 * (quotes[quotes.len() - 1].close - quotes[0].close) / quotes[0].close;
+        println!("pct change over period: {:.2}", pct_chg);
+    }
 
     if quotes.len() >= 3 {
         // need at least 3 data points to calculate std dev
