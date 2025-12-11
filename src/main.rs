@@ -23,7 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ags = Args::parse();
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
-    let quotes = get_quotes(&ticker).await?;
+    let (quotes_res, earnings_res) = tokio::join!(get_quotes(&ticker), get_earnings_dates(&ticker));
+    let quotes = quotes_res?;
+    let earnings = earnings_res.ok();
+
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
     if quotes.len() >= 2 {
@@ -47,10 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("annualized volatility: {:.2}", annualized_vol);
     }
 
-    let earnings = get_earnings_dates(&ticker).await;
-    if let Ok(x) = earnings {
-        if !x.is_empty() {
-            println!("earnings date: {}", x[0].format("%Y-%m-%d %H:%M"));
+    if let Some(er) = earnings {
+        if !er.is_empty() {
+            println!("earnings date: {}", er[0].format("%Y-%m-%d %H:%M"));
         }
     }
 
