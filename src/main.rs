@@ -1,4 +1,6 @@
 use anyhow::Result;
+use chrono::DateTime;
+use chrono::Utc;
 use clap::Parser;
 use num_format::{Locale, ToFormattedString};
 use rust_decimal::Decimal;
@@ -8,6 +10,7 @@ use yfinance_rs::core::conversions::money_to_f64;
 use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
 
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -18,7 +21,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ags = Args::parse();
-    let quotes = get_quotes(&ags.ticker).await?;
+    let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
+    let ticker = Ticker::new(&client, &ags.ticker);
+    let quotes = get_quotes(&ticker).await?;
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
     if quotes.len() >= 2 {
@@ -40,6 +45,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
         println!("std dev of returns: {:.4}", std_dev);
         println!("annualized volatility: {:.2}", annualized_vol);
+    }
+
+    let earnings = get_earnings_dates(&ticker).await;
+    match earnings {
+        Ok(x) => {
+            if !x.is_empty() {
+                println!("earnings date: {}", x[0].format("%Y-%m-%d %H:%M"));
+            }
+        }
+        Err(e) => {
+            println!("error fetching earnings: {e}");
+        }
     }
 
     Ok(())
@@ -74,13 +91,17 @@ fn print_quotes(quotes: &[Candle], returns: &[f64]) {
     println!("{}", table);
 }
 
-async fn get_quotes(ticker: &str) -> Result<Vec<Candle>> {
-    let client = YfClientBuilder::default().user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36").build()?;
-    let ticker = Ticker::new(&client, ticker);
+async fn get_quotes(ticker: &Ticker) -> Result<Vec<Candle>> {
     let hist = ticker
         .history(Some(Range::M1), Some(Interval::D1), false)
         .await?;
     Ok(hist)
+}
+
+async fn get_earnings_dates(ticker: &Ticker) -> Result<Vec<DateTime<Utc>>> {
+    let cal = ticker.calendar().await?;
+    let earnings = cal.earnings_dates;
+    Ok(earnings)
 }
 
 fn calc_returns(quotes: &[Candle]) -> Vec<f64> {
