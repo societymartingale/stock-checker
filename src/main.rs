@@ -48,14 +48,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let earnings = get_earnings_dates(&ticker).await;
-    match earnings {
-        Ok(x) => {
-            if !x.is_empty() {
-                println!("earnings date: {}", x[0].format("%Y-%m-%d %H:%M"));
-            }
-        }
-        Err(e) => {
-            println!("error fetching earnings: {e}");
+    if let Ok(x) = earnings {
+        if !x.is_empty() {
+            println!("earnings date: {}", x[0].format("%Y-%m-%d %H:%M"));
         }
     }
 
