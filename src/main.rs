@@ -25,9 +25,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ags = Args::parse();
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
-    let (quotes_res, earnings_res) = tokio::join!(get_quotes(&ticker), get_earnings_dates(&ticker));
+
+    let (quotes_res, earnings_res, fi) = tokio::join!(
+        get_quotes(&ticker),
+        get_earnings_dates(&ticker),
+        ticker.fast_info()
+    );
+    let fi = fi?;
     let quotes = quotes_res?;
     let earnings = earnings_res.ok();
+
+    if let Some(name) = fi.name {
+        println!("{} ({})", name, &ags.ticker.to_uppercase());
+    }
 
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
