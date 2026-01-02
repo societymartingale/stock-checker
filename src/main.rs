@@ -3,9 +3,11 @@ use chrono::DateTime;
 use chrono::Utc;
 use clap::Parser;
 use num_format::{Locale, ToFormattedString};
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
+use textplots::{Chart, Plot, Shape};
 use yfinance_rs::core::conversions::money_to_f64;
 use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
 
@@ -56,7 +58,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    println!("\n");
+    display_plot(&quotes);
+
     Ok(())
+}
+
+fn display_plot(quotes: &[Candle]) {
+    if quotes.is_empty() {
+        println!("No data to plot");
+        return;
+    }
+
+    let prices: Vec<(f32, f32)> = quotes
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i as f32, c.close.amount().to_f32().unwrap()))
+        .collect();
+
+    let xmax = (prices.len() - 1) as f32;
+    let ymin = prices.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min) * 0.99;
+    let ymax = prices
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f32::NEG_INFINITY, f32::max)
+        * 1.01;
+    Chart::new_with_y_range(180, 60, 0.0, xmax, ymin, ymax)
+        .lineplot(&Shape::Steps(&prices))
+        .nice();
 }
 
 fn print_quotes(quotes: &[Candle], returns: &[f64]) {
