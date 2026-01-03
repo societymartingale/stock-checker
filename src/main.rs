@@ -9,6 +9,7 @@ use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
 use textplots::{Chart, Plot, Shape};
 use yfinance_rs::core::conversions::money_to_f64;
+use yfinance_rs::fundamentals::CashflowRow;
 use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
 
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
@@ -26,14 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
 
-    let (quotes_res, earnings_res, fi) = tokio::join!(
+    let (quotes_res, earnings_res, fi, cf) = tokio::join!(
         get_quotes(&ticker),
         get_earnings_dates(&ticker),
-        ticker.fast_info()
+        ticker.fast_info(),
+        ticker.cashflow(None)
     );
     let fi = fi?;
     let quotes = quotes_res?;
     let earnings = earnings_res.ok();
+    let cf = cf?;
 
     if let Some(name) = fi.name {
         println!("{} ({})", name, &ags.ticker.to_uppercase());
@@ -70,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n");
     display_plot(&quotes);
+    print_cashflow(&cf);
 
     Ok(())
 }
@@ -123,7 +127,31 @@ fn print_quotes(quotes: &[Candle], returns: &[f64]) {
         ]);
     }
     let table = builder.build().with(Style::sharp()).to_string();
+    println!("{}", table);
+}
 
+fn print_cashflow(cf: &[CashflowRow]) {
+    if cf.is_empty() {
+        return;
+    }
+    println!();
+    let mut builder = Builder::default();
+    builder.push_record(["Year End", "Free Cash Flow"]);
+
+    for item in cf {
+        let period = &item.period.year_end();
+        let fcf = &item.free_cash_flow;
+        if let Some(period) = period {
+            if let Some(fcf) = fcf {
+                builder.push_record([
+                    period.to_string(),
+                    fcf.to_localized_string().unwrap().to_string(),
+                ]);
+            }
+        }
+    }
+
+    let table = builder.build().with(Style::sharp()).to_string();
     println!("{}", table);
 }
 
