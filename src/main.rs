@@ -44,6 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
+
+    println!("\n");
+    display_plot(&quotes);
+
     if quotes.len() >= 2 {
         let pct_chg = Decimal::from(100)
             * (quotes[quotes.len() - 1].close.amount() - quotes[0].close.amount())
@@ -71,10 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n");
-    display_plot(&quotes);
     print_cashflow(&cf);
-
     Ok(())
 }
 
