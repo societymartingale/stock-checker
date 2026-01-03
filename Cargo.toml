@@ -15,3 +15,4 @@ yfinance-rs = "0.7.2"
 tokio = { version = "1", features = ["full"] }
 rust_decimal = "1.39.0"
 textplots = "0.8.7"
+paft-money = { version = "0.7.1", features = ["money-formatting"] }
