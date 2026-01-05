@@ -21,6 +21,12 @@ struct Args {
     ticker: String,
 }
 
+#[derive(Debug)]
+struct PriceRange {
+    low: f64,
+    high: f64,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ags = Args::parse();
@@ -48,11 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n");
     display_plot(&quotes);
 
+    println!("\n--- Price Analysis ---");
     if quotes.len() >= 2 {
         let pct_chg = Decimal::from(100)
             * (quotes[quotes.len() - 1].close.amount() - quotes[0].close.amount())
             / quotes[0].close.amount();
-        println!("pct change over period: {:.2}", pct_chg);
+        println!("Pct change over period: {:.2}", pct_chg);
     }
 
     if quotes.len() >= 3 {
@@ -65,13 +72,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_slice()
             .std_dev();
         let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
-        println!("std dev of returns: {:.4}", std_dev);
-        println!("annualized volatility: {:.2}", annualized_vol);
+        println!("Std dev of returns: {:.4}", std_dev);
+        println!("Annualized volatility: {:.2}", annualized_vol);
+    }
+
+    if let Some((intraday, closing)) = get_price_range(&quotes) {
+        println!(
+            "Intraday low and high: {:.2} to {:.2}",
+            intraday.low, intraday.high
+        );
+        println!(
+            "Closing low and high:  {:.2} to {:.2}",
+            closing.low, closing.high
+        );
     }
 
     if let Some(er) = earnings {
         if !er.is_empty() {
-            println!("earnings date: {}", er[0].format("%Y-%m-%d %H:%M"));
+            println!("Earnings date: {}", er[0].format("%Y-%m-%d %H:%M"));
         }
     }
 
@@ -177,4 +195,31 @@ fn calc_returns(quotes: &[Candle]) -> Vec<f64> {
         res.push((cur - prev) / prev);
     }
     res
+}
+
+fn get_price_range(quotes: &[Candle]) -> Option<(PriceRange, PriceRange)> {
+    // get intraday and closing price ranges over time period
+    if quotes.is_empty() {
+        return None;
+    }
+
+    let mut intraday = PriceRange {
+        low: f64::INFINITY,
+        high: f64::NEG_INFINITY,
+    };
+    let mut closing = PriceRange {
+        low: f64::INFINITY,
+        high: f64::NEG_INFINITY,
+    };
+    for q in quotes {
+        let low = money_to_f64(&q.low);
+        let high = money_to_f64(&q.high);
+        let close = money_to_f64(&q.close);
+        intraday.low = intraday.low.min(low);
+        intraday.high = intraday.high.max(high);
+        closing.low = closing.low.min(close);
+        closing.high = closing.high.max(close);
+    }
+
+    Some((intraday, closing))
 }
