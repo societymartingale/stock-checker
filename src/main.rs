@@ -69,13 +69,7 @@ async fn main() -> Result<()> {
 
     if quotes.len() >= 3 {
         // need at least 3 data points to calculate std dev
-        let mean_return = returns.as_slice().mean();
-        let std_dev = returns
-            .iter()
-            .map(|r| r - mean_return)
-            .collect::<Vec<f64>>()
-            .as_slice()
-            .std_dev();
+        let std_dev = returns.as_slice().std_dev();
         let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
         println!("Std dev of returns: {:.4}", std_dev);
         println!("Annualized volatility: {:.2}", annualized_vol);
