@@ -12,6 +12,8 @@ use yfinance_rs::core::conversions::money_to_f64;
 use yfinance_rs::fundamentals::CashflowRow;
 use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
 
+const CHART_HEIGHT: u32 = 60;
+const CHART_WIDTH: u32 = 180;
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
@@ -28,7 +30,7 @@ struct PriceRange {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let ags = Args::parse();
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
@@ -56,10 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n--- Price Analysis ---");
     if quotes.len() >= 2 {
-        let pct_chg = Decimal::from(100)
-            * (quotes[quotes.len() - 1].close.amount() - quotes[0].close.amount())
-            / quotes[0].close.amount();
-        println!("Pct change over period: {:.2}", pct_chg);
+        let initial_close = quotes[0].close.amount();
+        if initial_close != Decimal::ZERO {
+            let pct_chg = Decimal::from(100)
+                * (quotes[quotes.len() - 1].close.amount() - initial_close)
+                / initial_close;
+            println!("Pct change over period: {:.2}", pct_chg);
+        }
     }
 
     if quotes.len() >= 3 {
@@ -116,12 +121,17 @@ fn display_plot(quotes: &[Candle]) {
         .map(|(_, y)| *y)
         .fold(f32::NEG_INFINITY, f32::max)
         * 1.01;
-    Chart::new_with_y_range(180, 60, 0.0, xmax, ymin, ymax)
+    Chart::new_with_y_range(CHART_WIDTH, CHART_HEIGHT, 0.0, xmax, ymin, ymax)
         .lineplot(&Shape::Steps(&prices))
         .nice();
 }
 
 fn print_quotes(quotes: &[Candle], returns: &[f64]) {
+    if quotes.is_empty() {
+        println!("No quotes to display");
+        return;
+    }
+
     let mut builder = Builder::default();
     builder.push_record(["Date", "Volume", "Open", "High", "Low", "Close", "Return %"]);
     for (idx, q) in quotes.iter().enumerate() {
