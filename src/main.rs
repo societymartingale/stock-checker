@@ -35,15 +35,15 @@ async fn main() -> Result<()> {
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
 
-    let (quotes_res, earnings_res, fi, cf) = tokio::join!(
+    let (quotes, earnings, fi, cf) = tokio::join!(
         get_quotes(&ticker),
         get_earnings_dates(&ticker),
         ticker.fast_info(),
         ticker.cashflow(None)
     );
     let fi = fi?;
-    let quotes = quotes_res?;
-    let earnings = earnings_res.ok();
+    let quotes = quotes?;
+    let earnings = earnings.ok();
     let cf = cf?;
 
     if let Some(name) = fi.name {
