@@ -6,10 +6,11 @@ Tool to display price information for a given ticker on the command line.
 
 ```sh
 vol -h
-Usage: vol --ticker <TICKER>
+Usage: vol [OPTIONS] --ticker <TICKER>
 
 Options:
   -t, --ticker <TICKER>  ticker symbol such as MSFT
+  -r, --range <RANGE>    historical time range [default: m1] [possible values: d1, d5, m1, m3, m6, y1, y2, y5, y10, ytd, max]
   -h, --help             Print help
 ```
 
