@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use num_format::{Locale, ToFormattedString};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -17,10 +17,46 @@ const CHART_WIDTH: u32 = 180;
 const TRADING_DAYS_YEAR: f64 = 252.0; // assume 252 trading days per year
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum RangeArg {
+    D1,
+    D5,
+    M1,
+    M3,
+    M6,
+    Y1,
+    Y2,
+    Y5,
+    Y10,
+    Ytd,
+    Max,
+}
+
+impl From<RangeArg> for Range {
+    fn from(arg: RangeArg) -> Self {
+        match arg {
+            RangeArg::D1 => Range::D1,
+            RangeArg::D5 => Range::D5,
+            RangeArg::M1 => Range::M1,
+            RangeArg::M3 => Range::M3,
+            RangeArg::M6 => Range::M6,
+            RangeArg::Y1 => Range::Y1,
+            RangeArg::Y2 => Range::Y2,
+            RangeArg::Y5 => Range::Y5,
+            RangeArg::Y10 => Range::Y10,
+            RangeArg::Ytd => Range::Ytd,
+            RangeArg::Max => Range::Max,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(short, long, required = true, help = "ticker symbol such as MSFT")]
     ticker: String,
+    #[arg(value_enum, short, long, default_value_t = RangeArg::M1, help = "historical time range")]
+    range: RangeArg,
 }
 
 #[derive(Debug)]
@@ -32,11 +68,12 @@ struct PriceRange {
 #[tokio::main]
 async fn main() -> Result<()> {
     let ags = Args::parse();
+    let range: Range = ags.range.into();
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
 
     let (quotes, earnings, fi, cf) = tokio::join!(
-        get_quotes(&ticker),
+        get_quotes(&ticker, range),
         get_earnings_dates(&ticker),
         ticker.fast_info(),
         ticker.cashflow(None)
@@ -97,8 +134,7 @@ async fn main() -> Result<()> {
 }
 
 fn display_plot(quotes: &[Candle]) {
-    if quotes.is_empty() {
-        println!("No data to plot");
+    if quotes.is_empty() || quotes.len() < 2 {
         return;
     }
 
@@ -178,9 +214,9 @@ fn print_cashflow(cf: &[CashflowRow]) {
     println!("{}", table);
 }
 
-async fn get_quotes(ticker: &Ticker) -> Result<Vec<Candle>> {
+async fn get_quotes(ticker: &Ticker, range: Range) -> Result<Vec<Candle>> {
     let hist = ticker
-        .history(Some(Range::M1), Some(Interval::D1), false)
+        .history(Some(range), Some(Interval::D1), false)
         .await?;
     Ok(hist)
 }
