@@ -121,6 +121,21 @@ async fn main() -> Result<()> {
             "Closing low and high:  {:.2} to {:.2}",
             closing.low, closing.high
         );
+        if let Some(last) = fi.last {
+            let last = money_to_f64(&last);
+            if last < intraday.high {
+                println!(
+                    "Pct below intraday high for period: {:.2}",
+                    100.0 * (intraday.high - last) / intraday.high
+                )
+            }
+            if last < closing.high {
+                println!(
+                    "Pct below closing high for period: {:.2}",
+                    100.0 * (closing.high - last) / closing.high
+                )
+            }
+        }
     }
 
     if let Some(er) = earnings {
