@@ -72,16 +72,18 @@ async fn main() -> Result<()> {
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
     let ticker = Ticker::new(&client, &ags.ticker);
 
-    let (quotes, earnings, fi, cf) = tokio::join!(
+    let (quotes, earnings, fi, cf, risk_free_rate) = tokio::join!(
         get_quotes(&ticker, range),
         get_earnings_dates(&ticker),
         ticker.fast_info(),
-        ticker.cashflow(None)
+        ticker.cashflow(None),
+        get_risk_free_rate(&client),
     );
     let fi = fi?;
     let quotes = quotes?;
     let earnings = earnings.ok();
     let cf = cf?;
+    let risk_free_rate = risk_free_rate?;
 
     if let Some(name) = fi.name {
         println!("{} ({})", name, &ags.ticker.to_uppercase());
@@ -108,8 +110,14 @@ async fn main() -> Result<()> {
         // need at least 3 data points to calculate std dev
         let std_dev = returns.as_slice().std_dev();
         let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
+        let sortino = sortino_ratio(&returns, risk_free_rate);
         println!("Std dev of returns: {:.4}", std_dev);
         println!("Annualized volatility: {:.2}", annualized_vol);
+        println!(
+            "Sortino ratio: {:.2} (using risk free rate of {:.2}%)",
+            sortino,
+            risk_free_rate * 100.0
+        );
     }
 
     if let Some((intraday, closing)) = get_price_range(&quotes) {
@@ -277,4 +285,38 @@ fn get_price_range(quotes: &[Candle]) -> Option<(PriceRange, PriceRange)> {
     }
 
     Some((intraday, closing))
+}
+
+async fn get_risk_free_rate(client: &yfinance_rs::YfClient) -> Result<f64> {
+    // 13 WEEK TREASURY BILL: ^IRX
+    let ticker = Ticker::new(client, "^IRX");
+    let fi = ticker.fast_info().await?;
+    let last = fi
+        .last
+        .ok_or_else(|| anyhow::anyhow!("Could not retrieve ^IRX price"))?;
+    let rate = money_to_f64(&last) / 100.0;
+    Ok(rate)
+}
+
+fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
+    if returns.is_empty() {
+        return 0.0;
+    }
+
+    let risk_free_daily = (1.0 + risk_free_annual).powf(1.0 / TRADING_DAYS_YEAR) - 1.0;
+    let excess_returns: Vec<f64> = returns.iter().map(|r| r - risk_free_daily).collect();
+    let mean_excess = excess_returns.as_slice().mean();
+    let downside_variance = excess_returns
+        .iter()
+        .map(|r| if *r < 0.0 { r * r } else { 0.0 })
+        .sum::<f64>()
+        / excess_returns.len() as f64;
+
+    let downside_std_dev = downside_variance.sqrt();
+    if downside_std_dev < f64::EPSILON {
+        return 0.0;
+    }
+
+    let annualization_factor = TRADING_DAYS_YEAR.sqrt();
+    (mean_excess * TRADING_DAYS_YEAR) / (downside_std_dev * annualization_factor)
 }
