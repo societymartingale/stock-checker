@@ -2,6 +2,18 @@
 
 Tool to display price information for a given ticker on the command line.
 
+## Installation
+
+- Install Rust: https://rust-lang.org/tools/install/
+- Install the tool:
+
+```sh
+git clone https://github.com/societymartingale/stock-checker.git
+cd stock-checker
+cargo build --release
+./target/release/vol -h
+```
+
 ## Usage
 
 ```sh
