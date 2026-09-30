@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let risk_free_rate = risk_free_rate?;
 
     if let Some(name) = fi.name {
-        println!("{} ({})", name, &ags.ticker.to_uppercase());
+        println!("{} ({})", name, ags.ticker.to_uppercase());
     }
 
     let returns = calc_returns(&quotes);
