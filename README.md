@@ -89,7 +89,7 @@ Sortino ratio: 4.65 (using risk free rate of 3.61%)
 Intraday low and high: 164.27 to 200.40
 Closing low and high:  165.17 to 198.89
 Pct below intraday high for period: 0.75
-Earnings date: 2026-05-20 20:00
+Earnings date: 2026-05-20 16:00 ET
 
 ┌────────────┬────────────────────┐
 │ Year End   │ Free Cash Flow     │
