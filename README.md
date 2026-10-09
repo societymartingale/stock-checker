@@ -14,6 +14,8 @@ cargo build --release
 ./target/release/vol -h
 ```
 
+The default build uses rustls and does not need OpenSSL. On a machine that must use the system TLS stack, build with `cargo build --release --features native-tls`. On Linux that feature links OpenSSL.
+
 ## Usage
 
 ```sh
