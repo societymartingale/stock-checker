@@ -5,6 +5,7 @@ Tool to display price information for a given ticker on the command line.
 ## Installation
 
 - Install Rust: https://rust-lang.org/tools/install/
+- Install the protobuf compiler. `yfinance-rs` needs `protoc` at build time. On Debian or Ubuntu: `sudo apt-get install protobuf-compiler`
 - Install the tool:
 
 ```sh
@@ -13,6 +14,8 @@ cd stock-checker
 cargo build --release
 ./target/release/vol -h
 ```
+
+The default build uses rustls and does not need OpenSSL. On a machine that must use the system TLS stack, build with `cargo build --release --features native-tls`. On Linux that feature links OpenSSL.
 
 ## Usage
 

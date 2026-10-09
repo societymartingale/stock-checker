@@ -320,3 +320,71 @@ fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
     let annualization_factor = TRADING_DAYS_YEAR.sqrt();
     (mean_excess * TRADING_DAYS_YEAR) / (downside_std_dev * annualization_factor)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{calc_returns, get_price_range, sortino_ratio};
+    use chrono::TimeZone;
+    use paft_money::Money;
+    use rust_decimal::Decimal;
+    use yfinance_rs::Candle;
+
+    fn usd(amount: &str) -> Money {
+        Money::new(
+            Decimal::from_str_exact(amount).unwrap(),
+            paft_money::Currency::default(),
+        )
+        .unwrap()
+    }
+
+    fn candle(low: &str, high: &str, close: &str) -> Candle {
+        let ts = chrono::Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+        Candle {
+            ts,
+            open: usd(close),
+            high: usd(high),
+            low: usd(low),
+            close: usd(close),
+            close_unadj: None,
+            volume: Some(1),
+        }
+    }
+
+    #[test]
+    fn calc_returns_is_close_to_close_change() {
+        let quotes = vec![
+            candle("9", "11", "10"),
+            candle("10", "13", "12"),
+            candle("8", "12", "9"),
+        ];
+
+        let returns = calc_returns(&quotes);
+
+        assert_eq!(returns.len(), 2);
+        assert!((returns[0] - 0.2).abs() < 1e-12);
+        assert!((returns[1] - (-0.25)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn price_range_tracks_intraday_and_close() {
+        let quotes = vec![candle("9", "11", "10"), candle("8", "14", "12")];
+
+        let (intraday, closing) = get_price_range(&quotes).expect("quotes are present");
+
+        assert!((intraday.low - 8.0).abs() < 1e-12);
+        assert!((intraday.high - 14.0).abs() < 1e-12);
+        assert!((closing.low - 10.0).abs() < 1e-12);
+        assert!((closing.high - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn empty_quotes_have_no_price_range() {
+        assert!(get_price_range(&[]).is_none());
+    }
+
+    #[test]
+    fn sortino_is_zero_without_downside() {
+        assert_eq!(sortino_ratio(&[], 0.04), 0.0);
+        assert_eq!(sortino_ratio(&[0.01, 0.02], 0.0), 0.0);
+    }
+}

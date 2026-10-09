@@ -3,6 +3,12 @@ name = "vol"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Work machines that must use the system TLS stack (OpenSSL on Linux).
+# Home builds leave this off and use rustls.
+native-tls = ["reqwest/native-tls"]
+
 [dependencies]
 anyhow = "1.0.100"
 chrono = "0.4.42"
@@ -10,7 +16,7 @@ clap = { version = "4.5.54", features = ["derive"] }
 num-format = "0.4.4"
 statrs = "0.18.0"
 tabled = { version = "0.20.0", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 yfinance-rs = "0.7.2"
 tokio = { version = "1", features = ["full"] }
 rust_decimal = "1.39.0"
