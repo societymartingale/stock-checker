@@ -169,8 +169,9 @@ fn display_plot(quotes: &[Candle]) {
 
     let prices: Vec<(f32, f32)> = quotes
         .iter()
+        .filter_map(|c| close(c).to_f32())
         .enumerate()
-        .filter_map(|(i, c)| close(c).to_f32().map(|y| (i as f32, y)))
+        .map(|(i, y)| (i as f32, y))
         .collect();
 
     if prices.len() < 2 {
@@ -240,8 +241,6 @@ fn print_cashflow(cf: &[CashflowRow]) {
     println!("{}", table);
 }
 
-/// Format a volume with thousands separators, e.g. "217,307,400".
-/// Missing volume prints as an empty cell.
 fn format_volume(volume: Option<&QuantityAmount>) -> String {
     let Some(volume) = volume else {
         return String::new();
@@ -253,16 +252,14 @@ fn format_volume(volume: Option<&QuantityAmount>) -> String {
     }
 }
 
-/// Format money with its currency symbol and separators, e.g. "$96,676,000,000.00".
-/// Falls back to the plain "<amount> <code>" form if localized formatting fails.
 fn format_money(money: &Money) -> String {
     money
         .to_localized_string()
         .unwrap_or_else(|_| money.to_string())
 }
 
-/// Fiscal year label used by the cash flow table: Dec 31 of the period's year.
-/// Matches the `ReportingPeriod::year_end()` helper that paft 0.9 removed.
+/// Cash-flow table label is Dec 31 of the fiscal year, not the period date.
+/// A fiscal year ending 2026-01-31 still prints as 2026-12-31.
 fn year_end(period: &ReportingPeriod) -> Option<NaiveDate> {
     let year = match period {
         ReportingPeriod::Date(date) => Some(date.get().year()),
@@ -284,7 +281,6 @@ fn close(candle: &Candle) -> Decimal {
     rounded_price(&candle.ohlc.close, &candle.currency)
 }
 
-/// Lossy conversion for statistics; prices always fit in an f64.
 fn to_f64(amount: Decimal) -> f64 {
     amount.to_f64().unwrap_or(f64::NAN)
 }
