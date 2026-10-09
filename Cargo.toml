@@ -12,6 +12,7 @@ native-tls = ["reqwest/native-tls"]
 [dependencies]
 anyhow = "1.0.100"
 chrono = "0.4.42"
+chrono-tz = "0.10.4"
 clap = { version = "4.5.54", features = ["derive"] }
 num-format = "0.4.4"
 statrs = "0.19.1"
