@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # yfinance-rs re-exports paft types, so yfinance-rs and the paft-* crates
+      # must move together or the build breaks with two paft versions.
+      yfinance-paft:
+        patterns:
+          - "yfinance-rs"
+          - "paft"
+          - "paft-*"
 
   - package-ecosystem: github-actions
     directory: /
