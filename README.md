@@ -5,6 +5,7 @@ Tool to display price information for a given ticker on the command line.
 ## Installation
 
 - Install Rust: https://rust-lang.org/tools/install/
+- Install the protobuf compiler. `yfinance-rs` needs `protoc` at build time. On Debian or Ubuntu: `sudo apt-get install protobuf-compiler`
 - Install the tool:
 
 ```sh
