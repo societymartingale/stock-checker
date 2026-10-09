@@ -1,6 +1,6 @@
 use anyhow::Result;
-use chrono::DateTime;
 use chrono::Utc;
+use chrono::{DateTime, Datelike, NaiveDate};
 use chrono_tz::America::New_York;
 use clap::{Parser, ValueEnum};
 use num_format::{Locale, ToFormattedString};
@@ -9,9 +9,9 @@ use rust_decimal::Decimal;
 use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
 use textplots::{Chart, Plot, Shape};
-use yfinance_rs::core::conversions::money_to_f64;
 use yfinance_rs::fundamentals::CashflowRow;
 use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
+use yfinance_rs::{Currency, Money, PriceAmount, QuantityAmount, ReportingPeriod};
 
 const CHART_HEIGHT: u32 = 60;
 const CHART_WIDTH: u32 = 180;
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let cf = cf?;
     let risk_free_rate = risk_free_rate?;
 
-    if let Some(name) = fi.name {
+    if let Some(name) = fi.snapshot.name {
         println!("{} ({})", name, ags.ticker.to_uppercase());
     }
 
@@ -98,10 +98,9 @@ async fn main() -> Result<()> {
 
     println!("\n--- Price Analysis ---");
     if quotes.len() >= 2 {
-        let initial_close = quotes[0].close.amount();
+        let initial_close = close(&quotes[0]);
         if initial_close != Decimal::ZERO {
-            let pct_chg = Decimal::from(100)
-                * (quotes[quotes.len() - 1].close.amount() - initial_close)
+            let pct_chg = Decimal::from(100) * (close(&quotes[quotes.len() - 1]) - initial_close)
                 / initial_close;
             println!("Pct change over period: {:.2}", pct_chg);
         }
@@ -130,8 +129,8 @@ async fn main() -> Result<()> {
             "Closing low and high:  {:.2} to {:.2}",
             closing.low, closing.high
         );
-        if let Some(last) = fi.last {
-            let last = money_to_f64(&last);
+        if let Some(last) = fi.snapshot.last.as_ref() {
+            let last = to_f64(rounded_price(last, &fi.snapshot.currency));
             if last < intraday.high {
                 println!(
                     "Pct below intraday high for period: {:.2}",
@@ -170,10 +169,14 @@ fn display_plot(quotes: &[Candle]) {
 
     let prices: Vec<(f32, f32)> = quotes
         .iter()
+        .filter_map(|c| close(c).to_f32())
         .enumerate()
-        .map(|(i, c)| (i as f32, c.close.amount().to_f32().unwrap()))
+        .map(|(i, y)| (i as f32, y))
         .collect();
 
+    if prices.len() < 2 {
+        return;
+    }
     let xmax = (prices.len() - 1) as f32;
     let ymin = prices.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min) * 0.99;
     let ymax = prices
@@ -207,11 +210,11 @@ fn print_quotes(quotes: &[Candle], returns: &[f64]) {
 
         builder.push_record([
             q.ts.date_naive().to_string(),
-            q.volume.unwrap().to_formatted_string(&Locale::en),
-            format!("{:.2}", q.open.amount()),
-            format!("{:.2}", q.high.amount()),
-            format!("{:.2}", q.low.amount()),
-            format!("{:.2}", q.close.amount()),
+            format_volume(q.volume.as_ref()),
+            format!("{:.2}", rounded_price(&q.ohlc.open, &q.currency)),
+            format!("{:.2}", rounded_price(&q.ohlc.high, &q.currency)),
+            format!("{:.2}", rounded_price(&q.ohlc.low, &q.currency)),
+            format!("{:.2}", close(q)),
             ret_fmt,
         ]);
     }
@@ -228,20 +231,58 @@ fn print_cashflow(cf: &[CashflowRow]) {
     builder.push_record(["Year End", "Free Cash Flow"]);
 
     for item in cf {
-        let period = &item.period.year_end();
-        let fcf = &item.free_cash_flow;
-        if let Some(period) = period {
-            if let Some(fcf) = fcf {
-                builder.push_record([
-                    period.to_string(),
-                    fcf.to_localized_string().unwrap().to_string(),
-                ]);
-            }
+        let period = year_end(&item.period);
+        if let (Some(period), Some(fcf)) = (period, item.free_cash_flow.as_ref()) {
+            builder.push_record([period.to_string(), format_money(fcf)]);
         }
     }
 
     let table = builder.build().with(Style::sharp()).to_string();
     println!("{}", table);
+}
+
+fn format_volume(volume: Option<&QuantityAmount>) -> String {
+    let Some(volume) = volume else {
+        return String::new();
+    };
+    let amount = volume.as_decimal();
+    match amount.to_u64() {
+        Some(whole) if amount.fract().is_zero() => whole.to_formatted_string(&Locale::en),
+        _ => amount.normalize().to_string(),
+    }
+}
+
+fn format_money(money: &Money) -> String {
+    money
+        .to_localized_string()
+        .unwrap_or_else(|_| money.to_string())
+}
+
+/// Cash-flow table label is Dec 31 of the fiscal year, not the period date.
+/// A fiscal year ending 2026-01-31 still prints as 2026-12-31.
+fn year_end(period: &ReportingPeriod) -> Option<NaiveDate> {
+    let year = match period {
+        ReportingPeriod::Date(date) => Some(date.get().year()),
+        other => other.year(),
+    }?;
+    NaiveDate::from_ymd_opt(year, 12, 31)
+}
+
+/// Price rounded to the currency's minor units (cents for USD), as the old
+/// `Money`-based candle fields were. Falls back to the raw amount if the
+/// currency has no known precision.
+fn rounded_price(price: &PriceAmount, currency: &Currency) -> Decimal {
+    Money::new(*price.as_decimal(), currency.clone())
+        .map(|m| m.amount())
+        .unwrap_or(*price.as_decimal())
+}
+
+fn close(candle: &Candle) -> Decimal {
+    rounded_price(&candle.ohlc.close, &candle.currency)
+}
+
+fn to_f64(amount: Decimal) -> f64 {
+    amount.to_f64().unwrap_or(f64::NAN)
 }
 
 async fn get_quotes(ticker: &Ticker, range: Range) -> Result<Vec<Candle>> {
@@ -260,8 +301,8 @@ async fn get_earnings_dates(ticker: &Ticker) -> Result<Vec<DateTime<Utc>>> {
 fn calc_returns(quotes: &[Candle]) -> Vec<f64> {
     let mut res: Vec<f64> = vec![];
     for i in 1..quotes.len() {
-        let cur = money_to_f64(&quotes[i].close);
-        let prev = money_to_f64(&quotes[i - 1].close);
+        let cur = to_f64(close(&quotes[i]));
+        let prev = to_f64(close(&quotes[i - 1]));
         res.push((cur - prev) / prev);
     }
     res
@@ -282,9 +323,9 @@ fn get_price_range(quotes: &[Candle]) -> Option<(PriceRange, PriceRange)> {
         high: f64::NEG_INFINITY,
     };
     for q in quotes {
-        let low = money_to_f64(&q.low);
-        let high = money_to_f64(&q.high);
-        let close = money_to_f64(&q.close);
+        let low = to_f64(rounded_price(&q.ohlc.low, &q.currency));
+        let high = to_f64(rounded_price(&q.ohlc.high, &q.currency));
+        let close = to_f64(close(q));
         intraday.low = intraday.low.min(low);
         intraday.high = intraday.high.max(high);
         closing.low = closing.low.min(close);
@@ -299,9 +340,10 @@ async fn get_risk_free_rate(client: &yfinance_rs::YfClient) -> Result<f64> {
     let ticker = Ticker::new(client, "^IRX");
     let fi = ticker.fast_info().await?;
     let last = fi
+        .snapshot
         .last
         .ok_or_else(|| anyhow::anyhow!("Could not retrieve ^IRX price"))?;
-    let rate = money_to_f64(&last) / 100.0;
+    let rate = to_f64(rounded_price(&last, &fi.snapshot.currency)) / 100.0;
     Ok(rate)
 }
 
@@ -330,31 +372,78 @@ fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{calc_returns, format_eastern, get_price_range, sortino_ratio};
+    use super::{
+        calc_returns, format_eastern, format_money, format_volume, get_price_range, rounded_price,
+        sortino_ratio, year_end,
+    };
     use chrono::TimeZone;
-    use paft_money::Money;
+    use paft_money::{Currency, IsoCurrency, Money, PriceAmount, QuantityAmount};
     use rust_decimal::Decimal;
-    use yfinance_rs::Candle;
+    use yfinance_rs::{Candle, Ohlc};
 
-    fn usd(amount: &str) -> Money {
-        Money::new(
-            Decimal::from_str_exact(amount).unwrap(),
-            paft_money::Currency::default(),
-        )
-        .unwrap()
+    fn usd_currency() -> Currency {
+        Currency::Iso(IsoCurrency::USD)
+    }
+
+    fn price(amount: &str) -> PriceAmount {
+        PriceAmount::new(Decimal::from_str_exact(amount).unwrap())
     }
 
     fn candle(low: &str, high: &str, close: &str) -> Candle {
         let ts = chrono::Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
-        Candle {
-            ts,
-            open: usd(close),
-            high: usd(high),
-            low: usd(low),
-            close: usd(close),
-            close_unadj: None,
-            volume: Some(1),
-        }
+        let ohlc = Ohlc::new(price(close), price(high), price(low), price(close));
+        let mut candle = Candle::new(ts, usd_currency(), ohlc);
+        candle.volume = Some(QuantityAmount::from_decimal(Decimal::ONE).unwrap());
+        candle
+    }
+
+    #[test]
+    fn prices_round_to_cents_like_money_did() {
+        assert_eq!(
+            rounded_price(&price("236.05999755859375"), &usd_currency()).to_string(),
+            "236.06"
+        );
+        assert_eq!(
+            rounded_price(&price("230.475"), &usd_currency()).to_string(),
+            "230.48"
+        );
+    }
+
+    #[test]
+    fn cash_flow_year_end_matches_old_labels() {
+        use chrono::NaiveDate;
+        use yfinance_rs::ReportingPeriod;
+
+        let fy_end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let dec31 = NaiveDate::from_ymd_opt(2026, 12, 31);
+        assert_eq!(year_end(&ReportingPeriod::date(fy_end).unwrap()), dec31);
+        assert_eq!(year_end(&ReportingPeriod::annual(2026).unwrap()), dec31);
+        assert_eq!(
+            year_end(&ReportingPeriod::quarterly(2026, 3).unwrap()),
+            dec31
+        );
+        assert_eq!(year_end(&ReportingPeriod::other("TTM").unwrap()), None);
+    }
+
+    #[test]
+    fn volume_is_formatted_with_separators() {
+        let vol = QuantityAmount::from_decimal(Decimal::from(217_307_400u64)).unwrap();
+        assert_eq!(format_volume(Some(&vol)), "217,307,400");
+
+        let fractional =
+            QuantityAmount::from_decimal(Decimal::from_str_exact("12.50").unwrap()).unwrap();
+        assert_eq!(format_volume(Some(&fractional)), "12.5");
+
+        assert_eq!(format_volume(None), "");
+    }
+
+    #[test]
+    fn free_cash_flow_is_formatted_as_localized_money() {
+        let fcf = Money::new(Decimal::from(96_676_000_000u64), usd_currency()).unwrap();
+        assert_eq!(format_money(&fcf), "$96,676,000,000.00");
+
+        let negative = Money::new(Decimal::from(-1_234_500i64), usd_currency()).unwrap();
+        assert_eq!(format_money(&negative), "-$1,234,500.00");
     }
 
     #[test]
