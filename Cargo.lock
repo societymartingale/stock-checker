@@ -1356,8 +1356,8 @@ dependencies = [
  "paft-domain",
  "paft-fundamentals",
  "paft-market",
- "paft-money",
- "paft-utils",
+ "paft-money 0.7.1",
+ "paft-utils 0.7.1",
  "thiserror",
 ]
 
@@ -1371,7 +1371,7 @@ dependencies = [
  "paft-domain",
  "paft-fundamentals",
  "paft-market",
- "paft-money",
+ "paft-money 0.7.1",
  "serde",
 ]
 
@@ -1387,6 +1387,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "paft-decimal"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c316206b71765363a2e4316291c53503ac760adb23b308a910ac41d5b118638"
+dependencies = [
+ "rust_decimal",
+ "serde",
+]
+
+[[package]]
 name = "paft-domain"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1395,7 +1405,7 @@ dependencies = [
  "chrono",
  "isin",
  "paft-core",
- "paft-utils",
+ "paft-utils 0.7.1",
  "regex",
  "serde",
  "thiserror",
@@ -1411,8 +1421,8 @@ dependencies = [
  "iso_currency",
  "paft-core",
  "paft-domain",
- "paft-money",
- "paft-utils",
+ "paft-money 0.7.1",
+ "paft-utils 0.7.1",
  "serde",
  "thiserror",
 ]
@@ -1429,8 +1439,8 @@ dependencies = [
  "iso_currency",
  "paft-core",
  "paft-domain",
- "paft-money",
- "paft-utils",
+ "paft-money 0.7.1",
+ "paft-utils 0.7.1",
  "serde",
  "thiserror",
 ]
@@ -1442,8 +1452,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "078c12dfca26fe2db783d2940b1a01bcf44832ad46006fdfb54b9eee6727e13d"
 dependencies = [
  "iso_currency",
- "paft-utils",
+ "paft-utils 0.7.1",
  "rust_decimal",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "paft-money"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0856a6cd715506023e2029094c1b101662e8ee16cbb0da87db8c3d1443ff7b4"
+dependencies = [
+ "iso_currency",
+ "paft-decimal",
+ "paft-utils 0.9.0",
  "serde",
  "thiserror",
 ]
@@ -1454,6 +1477,16 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f154451a10bb55eb00f81dfdc6410237ef348ead5b096ae3f186b232a240b3d6"
 dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "paft-utils"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9eeb29f4898718b6489a6d29ab8d17e398589c2605fc65ed48a7a2858dfab8"
+dependencies = [
+ "smol_str",
  "thiserror",
 ]
 
@@ -2190,6 +2223,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
+name = "smol_str"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa7368fcf4852a4c2dd92df0cace6a71f2091ca0a23391ce7f3a31833f1523"
+dependencies = [
+ "borsh",
+ "serde_core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2656,7 +2699,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "num-format",
- "paft-money",
+ "paft-money 0.9.0",
  "reqwest",
  "rust_decimal",
  "statrs",
