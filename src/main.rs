@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use chrono::{DateTime, Datelike, NaiveDate};
+use chrono_tz::America::New_York;
 use clap::{Parser, ValueEnum};
 use num_format::{Locale, ToFormattedString};
 use rust_decimal::prelude::ToPrimitive;
@@ -145,14 +146,20 @@ async fn main() -> Result<()> {
         }
     }
 
-    if let Some(er) = earnings {
-        if !er.is_empty() {
-            println!("Earnings date: {}", er[0].format("%Y-%m-%d %H:%M"));
-        }
+    if let Some(first) = earnings.as_ref().and_then(|er| er.first()) {
+        println!("Earnings date: {}", format_eastern(first));
     }
 
     print_cashflow(&cf);
     Ok(())
+}
+
+/// Format a UTC timestamp in US Eastern time (EST/EDT as appropriate), e.g. "2026-05-20 16:00 ET".
+fn format_eastern(ts: &DateTime<Utc>) -> String {
+    format!(
+        "{} ET",
+        ts.with_timezone(&New_York).format("%Y-%m-%d %H:%M")
+    )
 }
 
 fn display_plot(quotes: &[Candle]) {
@@ -169,7 +176,7 @@ fn display_plot(quotes: &[Candle]) {
     if prices.len() < 2 {
         return;
     }
-    let xmax = (quotes.len() - 1) as f32;
+    let xmax = (prices.len() - 1) as f32;
     let ymin = prices.iter().map(|(_, y)| *y).fold(f32::INFINITY, f32::min) * 0.99;
     let ymax = prices
         .iter()
@@ -370,8 +377,8 @@ fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        calc_returns, format_money, format_volume, get_price_range, rounded_price, sortino_ratio,
-        year_end,
+        calc_returns, format_eastern, format_money, format_volume, get_price_range, rounded_price,
+        sortino_ratio, year_end,
     };
     use chrono::TimeZone;
     use paft_money::{Currency, IsoCurrency, Money, PriceAmount, QuantityAmount};
@@ -473,6 +480,27 @@ mod tests {
     #[test]
     fn empty_quotes_have_no_price_range() {
         assert!(get_price_range(&[]).is_none());
+    }
+
+    #[test]
+    fn earnings_date_is_shown_in_eastern_time() {
+        // May is daylight saving time: EDT is UTC-4.
+        let edt = chrono::Utc.with_ymd_and_hms(2026, 5, 20, 20, 0, 0).unwrap();
+        assert_eq!(format_eastern(&edt), "2026-05-20 16:00 ET");
+
+        // February is standard time: EST is UTC-5.
+        let est = chrono::Utc.with_ymd_and_hms(2026, 2, 25, 21, 0, 0).unwrap();
+        assert_eq!(format_eastern(&est), "2026-02-25 16:00 ET");
+
+        // Converting can change the calendar date.
+        let late = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 30, 0).unwrap();
+        assert_eq!(format_eastern(&late), "2026-01-14 22:30 ET");
+
+        // DST transition day (2026-03-08 at 2:00 AM local): just before and after.
+        let before = chrono::Utc.with_ymd_and_hms(2026, 3, 8, 6, 59, 0).unwrap();
+        assert_eq!(format_eastern(&before), "2026-03-08 01:59 ET");
+        let after = chrono::Utc.with_ymd_and_hms(2026, 3, 8, 7, 0, 0).unwrap();
+        assert_eq!(format_eastern(&after), "2026-03-08 03:00 ET");
     }
 
     #[test]
