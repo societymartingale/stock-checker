@@ -24,10 +24,15 @@ vol -h
 Usage: vol [OPTIONS] --ticker <TICKER>
 
 Options:
-  -t, --ticker <TICKER>  ticker symbol such as MSFT
-  -r, --range <RANGE>    historical time range [default: m1] [possible values: d1, d5, m1, m3, m6, y1, y2, y5, y10, ytd, max]
-  -h, --help             Print help
+  -t, --ticker <TICKER>   ticker symbol such as MSFT
+  -r, --range <RANGE>     historical time range [default: m1] [possible values: d1, d5, m1, m3, m6, y1, y2, y5, y10, ytd, max]
+      --risk-free <RATE>  annual risk-free rate override, for example 0.04 (skips ^IRX)
+  -h, --help              Print help
 ```
+
+Quote info, cash flow, and the ^IRX risk-free rate are optional. If one of those requests fails, that section prints a short unavailable note and the rest of the report still prints. Earnings dates are omitted when they cannot be loaded. Price history is required; if that request fails, `vol` exits without a report.
+
+`--risk-free` sets the annual risk-free rate used for the Sortino ratio and skips the ^IRX lookup. Pass a decimal such as `0.04` for 4%. When ^IRX fails and this flag is not set, the Sortino ratio is `n/a`. It is also `n/a` when the range has no down days.
 
 ## Example
 
