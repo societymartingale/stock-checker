@@ -10,7 +10,7 @@ use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
 use textplots::{Chart, Plot, Shape};
 use yfinance_rs::fundamentals::CashflowRow;
-use yfinance_rs::{Candle, Interval, Range, Ticker, YfClientBuilder};
+use yfinance_rs::{Candle, FastInfo, Interval, Range, Ticker, YfClientBuilder};
 use yfinance_rs::{Currency, Money, PriceAmount, QuantityAmount, ReportingPeriod};
 
 const CHART_HEIGHT: u32 = 60;
@@ -58,6 +58,12 @@ struct Args {
     ticker: String,
     #[arg(value_enum, short, long, default_value_t = RangeArg::M1, help = "historical time range")]
     range: RangeArg,
+    #[arg(
+        long,
+        value_name = "RATE",
+        help = "annual risk-free rate override, for example 0.04 (skips ^IRX)"
+    )]
+    risk_free: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -68,27 +74,34 @@ struct PriceRange {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let ags = Args::parse();
-    let range: Range = ags.range.into();
+    let args = Args::parse();
+    let range: Range = args.range.into();
     let client = YfClientBuilder::default().user_agent(USER_AGENT).build()?;
-    let ticker = Ticker::new(&client, &ags.ticker);
+    let ticker = Ticker::new(&client, &args.ticker);
+    let risk_free_override = args.risk_free;
 
-    let (quotes, earnings, fi, cf, risk_free_rate) = tokio::join!(
+    let (quotes, earnings, quote_info, cash_flow, fetched_risk_free) = tokio::join!(
         get_quotes(&ticker, range),
         get_earnings_dates(&ticker),
         ticker.fast_info(),
         ticker.cashflow(None),
-        get_risk_free_rate(&client),
+        async {
+            if risk_free_override.is_some() {
+                None
+            } else {
+                Some(get_risk_free_rate(&client).await)
+            }
+        },
     );
-    let fi = fi?;
+    // Price history is the body of the report. The other requests are optional
+    // and must not discard a history that already succeeded.
     let quotes = quotes?;
     let earnings = earnings.ok();
-    let cf = cf?;
-    let risk_free_rate = risk_free_rate?;
+    let quote_info = quote_info.ok();
+    let risk_free_rate =
+        resolve_risk_free_rate(risk_free_override, fetched_risk_free.and_then(Result::ok));
 
-    if let Some(name) = fi.snapshot.name {
-        println!("{} ({})", name, ags.ticker.to_uppercase());
-    }
+    print_heading(quote_info.as_ref(), &args.ticker);
 
     let returns = calc_returns(&quotes);
     print_quotes(&quotes, &returns);
@@ -96,31 +109,60 @@ async fn main() -> Result<()> {
     println!("\n");
     display_plot(&quotes);
 
+    let last = quote_info.as_ref().and_then(|info| {
+        let price = info.snapshot.last.as_ref()?;
+        Some((price, &info.snapshot.currency))
+    });
+    print_price_analysis(&quotes, &returns, last, risk_free_rate);
+
+    if let Some(first) = earnings.as_ref().and_then(|er| er.first()) {
+        println!("Earnings date: {}", format_eastern(first));
+    }
+
+    print_cashflow_section(cash_flow);
+    Ok(())
+}
+
+fn print_heading(quote_info: Option<&FastInfo>, ticker: &str) {
+    let symbol = ticker.to_uppercase();
+    if let Some(info) = quote_info {
+        if let Some(name) = info.snapshot.name.as_deref() {
+            println!("{name} ({symbol})");
+        }
+    } else {
+        println!("Quote info unavailable ({symbol})");
+    }
+}
+
+fn print_price_analysis(
+    quotes: &[Candle],
+    returns: &[f64],
+    last: Option<(&PriceAmount, &Currency)>,
+    risk_free_rate: Option<f64>,
+) {
     println!("\n--- Price Analysis ---");
     if quotes.len() >= 2 {
         let initial_close = close(&quotes[0]);
         if initial_close != Decimal::ZERO {
             let pct_chg = Decimal::from(100) * (close(&quotes[quotes.len() - 1]) - initial_close)
                 / initial_close;
-            println!("Pct change over period: {:.2}", pct_chg);
+            println!("Pct change over period: {pct_chg:.2}");
         }
     }
 
-    if quotes.len() >= 3 {
+    let finite_returns = finite_returns(returns);
+    if finite_returns.len() >= 2 {
         // need at least 3 data points to calculate std dev
-        let std_dev = returns.as_slice().std_dev();
+        let std_dev = finite_returns.as_slice().std_dev();
         let annualized_vol = std_dev * TRADING_DAYS_YEAR.sqrt() * 100.0;
-        let sortino = sortino_ratio(&returns, risk_free_rate);
-        println!("Std dev of returns: {:.4}", std_dev);
-        println!("Annualized volatility: {:.2}", annualized_vol);
-        println!(
-            "Sortino ratio: {:.2} (using risk free rate of {:.2}%)",
-            sortino,
-            risk_free_rate * 100.0
-        );
+        println!("Std dev of returns: {std_dev:.4}");
+        println!("Annualized volatility: {annualized_vol:.2}");
+        println!("{}", format_sortino(&finite_returns, risk_free_rate));
+    } else if risk_free_rate.is_none() {
+        println!("Risk-free rate unavailable");
     }
 
-    if let Some((intraday, closing)) = get_price_range(&quotes) {
+    if let Some((intraday, closing)) = get_price_range(quotes) {
         println!(
             "Intraday low and high: {:.2} to {:.2}",
             intraday.low, intraday.high
@@ -129,29 +171,49 @@ async fn main() -> Result<()> {
             "Closing low and high:  {:.2} to {:.2}",
             closing.low, closing.high
         );
-        if let Some(last) = fi.snapshot.last.as_ref() {
-            let last = to_f64(rounded_price(last, &fi.snapshot.currency));
-            if last < intraday.high {
-                println!(
-                    "Pct below intraday high for period: {:.2}",
-                    100.0 * (intraday.high - last) / intraday.high
-                )
-            }
-            if last < closing.high {
-                println!(
-                    "Pct below closing high for period: {:.2}",
-                    100.0 * (closing.high - last) / closing.high
-                )
-            }
+        if let Some((price, currency)) = last {
+            let last = to_f64(rounded_price(price, currency));
+            print_pct_below("intraday", last, intraday.high);
+            print_pct_below("closing", last, closing.high);
         }
     }
+}
 
-    if let Some(first) = earnings.as_ref().and_then(|er| er.first()) {
-        println!("Earnings date: {}", format_eastern(first));
+fn print_pct_below(which: &str, last: f64, high: f64) {
+    if last.is_finite() && high.is_finite() && high > 0.0 && last < high {
+        println!(
+            "Pct below {which} high for period: {:.2}",
+            100.0 * (high - last) / high
+        );
     }
+}
 
-    print_cashflow(&cf);
-    Ok(())
+fn print_cashflow_section<E>(cash_flow: Result<Vec<CashflowRow>, E>) {
+    match cash_flow {
+        Ok(rows) => print_cashflow(&rows),
+        Err(_) => println!("\nCash flow unavailable"),
+    }
+}
+
+/// Prefer `--risk-free` over the fetched ^IRX rate. `None` means Sortino has no rate.
+fn resolve_risk_free_rate(override_rate: Option<f64>, fetched: Option<f64>) -> Option<f64> {
+    match override_rate {
+        Some(rate) => rate.is_finite().then_some(rate),
+        None => fetched.filter(|rate| rate.is_finite()),
+    }
+}
+
+fn format_sortino(returns: &[f64], risk_free_rate: Option<f64>) -> String {
+    let Some(rate) = risk_free_rate else {
+        return "Risk-free rate unavailable\nSortino ratio: n/a".to_string();
+    };
+    let pct = rate * 100.0;
+    match sortino_ratio(returns, rate) {
+        Some(sortino) => {
+            format!("Sortino ratio: {sortino:.2} (using risk free rate of {pct:.2}%)")
+        }
+        None => format!("Sortino ratio: n/a (using risk free rate of {pct:.2}%)"),
+    }
 }
 
 /// Format a UTC timestamp in US Eastern time (EST/EDT as appropriate), e.g. "2026-05-20 16:00 ET".
@@ -169,7 +231,7 @@ fn display_plot(quotes: &[Candle]) {
 
     let prices: Vec<(f32, f32)> = quotes
         .iter()
-        .filter_map(|c| close(c).to_f32())
+        .filter_map(|c| decimal_to_f32(close(c)))
         .enumerate()
         .map(|(i, y)| (i as f32, y))
         .collect();
@@ -198,15 +260,14 @@ fn print_quotes(quotes: &[Candle], returns: &[f64]) {
     let mut builder = Builder::default();
     builder.push_record(["Date", "Volume", "Open", "High", "Low", "Close", "Return %"]);
     for (idx, q) in quotes.iter().enumerate() {
-        let mut ret_fmt = "".to_string();
-        if idx > 0 {
-            let ret = returns[idx - 1] * 100.0;
-            if ret < 0.0 {
-                ret_fmt = format!("{:.2}", ret);
-            } else {
-                ret_fmt = format!(" {:.2}", ret);
-            }
-        }
+        let ret_fmt = if idx == 0 {
+            String::new()
+        } else {
+            returns
+                .get(idx - 1)
+                .copied()
+                .map_or_else(String::new, format_return_cell)
+        };
 
         builder.push_record([
             q.ts.date_naive().to_string(),
@@ -253,9 +314,42 @@ fn format_volume(volume: Option<&QuantityAmount>) -> String {
 }
 
 fn format_money(money: &Money) -> String {
-    money
-        .to_localized_string()
-        .unwrap_or_else(|_| money.to_string())
+    localized_or_canonical(money.to_localized_string(), || money.to_string())
+}
+
+fn localized_or_canonical<E>(
+    localized: Result<String, E>,
+    canonical: impl FnOnce() -> String,
+) -> String {
+    match localized {
+        Ok(formatted) => formatted,
+        Err(_) => canonical(),
+    }
+}
+
+fn format_return_cell(ret: f64) -> String {
+    if !ret.is_finite() {
+        return String::new();
+    }
+    let pct = ret * 100.0;
+    if pct < 0.0 {
+        format!("{pct:.2}")
+    } else {
+        format!(" {pct:.2}")
+    }
+}
+
+fn finite_returns(returns: &[f64]) -> Vec<f64> {
+    returns
+        .iter()
+        .copied()
+        .filter(|ret| ret.is_finite())
+        .collect()
+}
+
+/// Plot coordinate. `None` when the price does not fit in a finite `f32`.
+fn decimal_to_f32(amount: Decimal) -> Option<f32> {
+    amount.to_f32().filter(|value| value.is_finite())
 }
 
 /// Cash-flow table label is Dec 31 of the fiscal year, not the period date.
@@ -299,11 +393,17 @@ async fn get_earnings_dates(ticker: &Ticker) -> Result<Vec<DateTime<Utc>>> {
 }
 
 fn calc_returns(quotes: &[Candle]) -> Vec<f64> {
-    let mut res: Vec<f64> = vec![];
+    let mut res = Vec::with_capacity(quotes.len().saturating_sub(1));
     for i in 1..quotes.len() {
         let cur = to_f64(close(&quotes[i]));
         let prev = to_f64(close(&quotes[i - 1]));
-        res.push((cur - prev) / prev);
+        // Keep one slot per pair so the table stays aligned. A zero previous
+        // close would divide by zero; a missing conversion is not a return.
+        if prev.is_finite() && prev != 0.0 && cur.is_finite() {
+            res.push((cur - prev) / prev);
+        } else {
+            res.push(f64::NAN);
+        }
     }
     res
 }
@@ -332,6 +432,14 @@ fn get_price_range(quotes: &[Candle]) -> Option<(PriceRange, PriceRange)> {
         closing.high = closing.high.max(close);
     }
 
+    if !intraday.low.is_finite()
+        || !intraday.high.is_finite()
+        || !closing.low.is_finite()
+        || !closing.high.is_finite()
+    {
+        return None;
+    }
+
     Some((intraday, closing))
 }
 
@@ -344,16 +452,31 @@ async fn get_risk_free_rate(client: &yfinance_rs::YfClient) -> Result<f64> {
         .last
         .ok_or_else(|| anyhow::anyhow!("Could not retrieve ^IRX price"))?;
     let rate = to_f64(rounded_price(&last, &fi.snapshot.currency)) / 100.0;
+    if !rate.is_finite() {
+        return Err(anyhow::anyhow!("Could not retrieve ^IRX price"));
+    }
     Ok(rate)
 }
 
-fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
-    if returns.is_empty() {
-        return 0.0;
+fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> Option<f64> {
+    if !risk_free_annual.is_finite() {
+        return None;
     }
 
     let risk_free_daily = (1.0 + risk_free_annual).powf(1.0 / TRADING_DAYS_YEAR) - 1.0;
-    let excess_returns: Vec<f64> = returns.iter().map(|r| r - risk_free_daily).collect();
+    if !risk_free_daily.is_finite() {
+        return None;
+    }
+    let excess_returns: Vec<f64> = returns
+        .iter()
+        .copied()
+        .filter(|ret| ret.is_finite())
+        .map(|ret| ret - risk_free_daily)
+        .collect();
+    if excess_returns.is_empty() {
+        return None;
+    }
+
     let mean_excess = excess_returns.as_slice().mean();
     let downside_variance = excess_returns
         .iter()
@@ -362,19 +485,20 @@ fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> f64 {
         / excess_returns.len() as f64;
 
     let downside_std_dev = downside_variance.sqrt();
-    if downside_std_dev < f64::EPSILON {
-        return 0.0;
+    if !downside_std_dev.is_finite() || downside_std_dev < f64::EPSILON {
+        return None;
     }
 
     let annualization_factor = TRADING_DAYS_YEAR.sqrt();
-    (mean_excess * TRADING_DAYS_YEAR) / (downside_std_dev * annualization_factor)
+    Some((mean_excess * TRADING_DAYS_YEAR) / (downside_std_dev * annualization_factor))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        calc_returns, format_eastern, format_money, format_volume, get_price_range, rounded_price,
-        sortino_ratio, year_end,
+        calc_returns, format_eastern, format_money, format_return_cell, format_sortino,
+        format_volume, get_price_range, localized_or_canonical, resolve_risk_free_rate,
+        rounded_price, sortino_ratio, year_end,
     };
     use chrono::TimeZone;
     use paft_money::{Currency, IsoCurrency, Money, PriceAmount, QuantityAmount};
@@ -500,8 +624,77 @@ mod tests {
     }
 
     #[test]
-    fn sortino_is_zero_without_downside() {
-        assert_eq!(sortino_ratio(&[], 0.04), 0.0);
-        assert_eq!(sortino_ratio(&[0.01, 0.02], 0.0), 0.0);
+    fn sortino_is_na_without_downside() {
+        assert_eq!(sortino_ratio(&[], 0.04), None);
+        assert_eq!(sortino_ratio(&[0.01, 0.02], 0.0), None);
+        assert_eq!(
+            format_sortino(&[0.01, 0.02], Some(0.04)),
+            "Sortino ratio: n/a (using risk free rate of 4.00%)"
+        );
+    }
+
+    #[test]
+    fn sortino_is_na_without_a_risk_free_rate() {
+        assert_eq!(sortino_ratio(&[0.01, -0.02], f64::NAN), None);
+        assert_eq!(
+            format_sortino(&[0.01, -0.02], None),
+            "Risk-free rate unavailable\nSortino ratio: n/a"
+        );
+    }
+
+    #[test]
+    fn sortino_is_some_when_a_day_is_down() {
+        let sortino = sortino_ratio(&[0.02, -0.01], 0.0).expect("down day");
+        assert!(sortino.is_finite());
+        assert!(sortino != 0.0);
+    }
+
+    #[test]
+    fn risk_free_override_replaces_the_fetched_rate() {
+        assert_eq!(resolve_risk_free_rate(Some(0.04), Some(0.01)), Some(0.04));
+        assert_eq!(resolve_risk_free_rate(Some(0.04), None), Some(0.04));
+        assert_eq!(resolve_risk_free_rate(Some(0.0), Some(0.05)), Some(0.0));
+        assert_eq!(resolve_risk_free_rate(None, Some(0.0361)), Some(0.0361));
+        assert_eq!(resolve_risk_free_rate(None, None), None);
+        assert_eq!(resolve_risk_free_rate(Some(f64::NAN), Some(0.02)), None);
+        assert_eq!(resolve_risk_free_rate(None, Some(f64::NAN)), None);
+    }
+
+    #[test]
+    fn calc_returns_does_not_divide_by_a_zero_close() {
+        let quotes = vec![
+            candle("9", "11", "10"),
+            candle("0", "1", "0"),
+            candle("4", "6", "5"),
+        ];
+
+        let returns = calc_returns(&quotes);
+
+        assert_eq!(returns.len(), 2);
+        assert!((returns[0] - (-1.0)).abs() < 1e-12);
+        assert!(returns[1].is_nan());
+        assert!(!returns[1].is_infinite());
+    }
+
+    #[test]
+    fn non_finite_return_prints_as_a_blank_cell() {
+        assert_eq!(format_return_cell(f64::NAN), "");
+        assert_eq!(format_return_cell(f64::INFINITY), "");
+        assert_eq!(format_return_cell(0.2), " 20.00");
+        assert_eq!(format_return_cell(-0.25), "-25.00");
+    }
+
+    #[test]
+    fn money_formatting_falls_back_when_localization_fails() {
+        let fcf = Money::new(Decimal::from(96_676_000_000u64), usd_currency()).unwrap();
+        let canonical = fcf.to_string();
+        assert_ne!(canonical, "$96,676,000,000.00");
+        assert_eq!(
+            localized_or_canonical(Err(paft_money::MoneyError::InvalidAmountFormat), || {
+                canonical.clone()
+            }),
+            canonical
+        );
+        assert_eq!(format_money(&fcf), "$96,676,000,000.00");
     }
 }
