@@ -32,6 +32,8 @@ Options:
 
 Quote info, cash flow, and the ^IRX risk-free rate are optional. If one of those requests fails, that section prints a short unavailable note and the rest of the report still prints. Earnings dates are omitted when they cannot be loaded. Price history is required; if that request fails, `vol` exits without a report.
 
+Outside the regular session the report adds the latest pre-market or after-hours trade and its change versus the most recent regular-session close, for example `After-hours: $199.69 (+0.40% vs close) as of 7:28 PM ET`. During regular hours that line is omitted. If the market state cannot be loaded, the line is skipped. If the session is already known to be outside regular hours but the intraday bars are missing, the report prints `Extended hours unavailable`.
+
 `--risk-free` sets the annual risk-free rate used for the Sortino ratio and skips the ^IRX lookup. Pass a decimal such as `0.04` for 4%. When ^IRX fails and this flag is not set, the Sortino ratio is `n/a`. It is also `n/a` when the range has no down days.
 
 ## Example
@@ -94,6 +96,7 @@ Sortino ratio: 4.65 (using risk free rate of 3.61%)
 Intraday low and high: 164.27 to 200.40
 Closing low and high:  165.17 to 198.89
 Pct below intraday high for period: 0.75
+After-hours: $199.69 (+0.40% vs close) as of 7:28 PM ET
 Earnings date: 2026-05-20 16:00 ET
 
 ┌────────────┬────────────────────┐
