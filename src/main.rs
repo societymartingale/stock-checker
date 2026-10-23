@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use chrono::{DateTime, Datelike, NaiveDate};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Timelike};
 use chrono_tz::America::New_York;
 use clap::{Parser, ValueEnum};
 use num_format::{Locale, ToFormattedString};
@@ -10,7 +10,7 @@ use statrs::statistics::Statistics;
 use tabled::{builder::Builder, settings::Style};
 use textplots::{Chart, Plot, Shape};
 use yfinance_rs::fundamentals::CashflowRow;
-use yfinance_rs::{Candle, FastInfo, Interval, Range, Ticker, YfClientBuilder};
+use yfinance_rs::{Candle, FastInfo, Interval, MarketState, Quote, Range, Ticker, YfClientBuilder};
 use yfinance_rs::{Currency, Money, PriceAmount, QuantityAmount, ReportingPeriod};
 
 const CHART_HEIGHT: u32 = 60;
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     let ticker = Ticker::new(&client, &args.ticker);
     let risk_free_override = args.risk_free;
 
-    let (quotes, earnings, quote_info, cash_flow, fetched_risk_free) = tokio::join!(
+    let (quotes, earnings, quote_info, cash_flow, fetched_risk_free, quote) = tokio::join!(
         get_quotes(&ticker, range),
         get_earnings_dates(&ticker),
         ticker.fast_info(),
@@ -92,12 +92,14 @@ async fn main() -> Result<()> {
                 Some(get_risk_free_rate(&client).await)
             }
         },
+        ticker.quote(),
     );
     // Price history is the body of the report. The other requests are optional
     // and must not discard a history that already succeeded.
     let quotes = quotes?;
     let earnings = earnings.ok();
     let quote_info = quote_info.ok();
+    let quote = quote.ok();
     let risk_free_rate =
         resolve_risk_free_rate(risk_free_override, fetched_risk_free.and_then(Result::ok));
 
@@ -114,6 +116,7 @@ async fn main() -> Result<()> {
         Some((price, &info.snapshot.currency))
     });
     print_price_analysis(&quotes, &returns, last, risk_free_rate);
+    print_extended_hours(&extended_hours_section(&ticker, quote.as_ref(), quotes.last()).await);
 
     if let Some(first) = earnings.as_ref().and_then(|er| er.first()) {
         println!("Earnings date: {}", format_eastern(first));
@@ -222,6 +225,233 @@ fn format_eastern(ts: &DateTime<Utc>) -> String {
         "{} ET",
         ts.with_timezone(&New_York).format("%Y-%m-%d %H:%M")
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionLabel {
+    PreMarket,
+    AfterHours,
+}
+
+impl SessionLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            SessionLabel::PreMarket => "Pre-market",
+            SessionLabel::AfterHours => "After-hours",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExtendedHours {
+    /// Regular session, or the quote did not say which session it is.
+    Hidden,
+    /// Outside the regular session, but no extended-hours print is available.
+    Unavailable,
+    Line(String),
+}
+
+struct ExtendedBar {
+    label: SessionLabel,
+    price: Decimal,
+    currency: Currency,
+    ts: DateTime<Utc>,
+}
+
+fn is_regular_session(state: &MarketState) -> bool {
+    matches!(state, MarketState::Regular)
+}
+
+/// Pre-market is before 9:30 America/New_York. After-hours starts at 16:00.
+/// A 1-minute bar timestamped 16:00 is the first post-market minute: Yahoo stamps
+/// the start of the interval, and the regular close is the prior minute.
+fn extended_session(ts: DateTime<Utc>) -> Option<SessionLabel> {
+    let time = ts.with_timezone(&New_York).time();
+    let open = NaiveTime::from_hms_opt(9, 30, 0)?;
+    let close = NaiveTime::from_hms_opt(16, 0, 0)?;
+    if time < open {
+        Some(SessionLabel::PreMarket)
+    } else if time >= close {
+        Some(SessionLabel::AfterHours)
+    } else {
+        None
+    }
+}
+
+/// `Pre` and `Post` name the line. Every other non-regular state uses the bar clock.
+fn label_extended_bar(state: &MarketState, ts: DateTime<Utc>) -> Option<SessionLabel> {
+    let clock = extended_session(ts)?;
+    if is_regular_session(state) {
+        return None;
+    }
+    Some(match state {
+        MarketState::Pre => SessionLabel::PreMarket,
+        MarketState::Post => SessionLabel::AfterHours,
+        _ => clock,
+    })
+}
+
+/// Latest bar outside the regular session. Regular-session bars are ignored.
+fn latest_extended_bar(bars: &[Candle], state: &MarketState) -> Option<ExtendedBar> {
+    if is_regular_session(state) {
+        return None;
+    }
+    let mut best: Option<&Candle> = None;
+    for bar in bars {
+        if extended_session(bar.ts).is_none() {
+            continue;
+        }
+        let newer = best.is_none_or(|current| bar.ts >= current.ts);
+        if newer {
+            best = Some(bar);
+        }
+    }
+    let bar = best?;
+    Some(ExtendedBar {
+        label: label_extended_bar(state, bar.ts)?,
+        price: rounded_price(&bar.ohlc.close, &bar.currency),
+        currency: bar.currency.clone(),
+        ts: bar.ts,
+    })
+}
+
+/// Clock time in Eastern, e.g. "7:28 PM ET". The offset follows EST or EDT.
+fn format_et_clock(ts: DateTime<Utc>) -> String {
+    let local = ts.with_timezone(&New_York);
+    let (hour12, meridiem) = match local.hour() {
+        0 => (12, "AM"),
+        hour @ 1..=11 => (hour, "AM"),
+        12 => (12, "PM"),
+        hour => (hour - 12, "PM"),
+    };
+    format!("{hour12}:{:02} {meridiem} ET", local.minute())
+}
+
+fn format_extended_price(amount: Decimal, currency: &Currency) -> String {
+    match Money::new(amount, currency.clone()) {
+        Ok(money) => format_money(&money),
+        Err(_) => format!("{amount:.2}"),
+    }
+}
+
+/// Percent change of `price` against the most recent regular-session close.
+fn percent_vs_close(price: Decimal, regular_close: Decimal) -> Option<f64> {
+    if regular_close.is_zero() {
+        return None;
+    }
+    let price = to_f64(price);
+    let regular_close = to_f64(regular_close);
+    if !price.is_finite() || !regular_close.is_finite() || regular_close == 0.0 {
+        return None;
+    }
+    let pct = (price - regular_close) / regular_close * 100.0;
+    pct.is_finite().then_some(pct)
+}
+
+fn format_extended_hours_line(
+    label: SessionLabel,
+    price: Decimal,
+    currency: &Currency,
+    regular_close: Decimal,
+    ts: DateTime<Utc>,
+) -> Option<String> {
+    let pct = percent_vs_close(price, regular_close)?;
+    Some(format!(
+        "{}: {} ({:+.2}% vs close) as of {}",
+        label.as_str(),
+        format_extended_price(price, currency),
+        pct,
+        format_et_clock(ts),
+    ))
+}
+
+fn extended_hours_line_from_bars(
+    bars: &[Candle],
+    state: &MarketState,
+    regular_close: Decimal,
+) -> Option<String> {
+    let bar = latest_extended_bar(bars, state)?;
+    format_extended_hours_line(bar.label, bar.price, &bar.currency, regular_close, bar.ts)
+}
+
+fn bars_on_date(bars: &[Candle], day: NaiveDate) -> bool {
+    bars.iter()
+        .any(|bar| bar.ts.with_timezone(&New_York).date_naive() == day)
+}
+
+/// Use today's 1-minute bars when that session has any, otherwise the wider set.
+fn choose_intraday_bars<'a>(
+    today_bars: &'a [Candle],
+    wider_bars: &'a [Candle],
+    today: NaiveDate,
+) -> &'a [Candle] {
+    if bars_on_date(today_bars, today) {
+        today_bars
+    } else {
+        wider_bars
+    }
+}
+
+fn extended_hours_output(
+    state: Option<&MarketState>,
+    bars: &[Candle],
+    regular_close: Option<Decimal>,
+) -> ExtendedHours {
+    let Some(state) = state else {
+        return ExtendedHours::Hidden;
+    };
+    if is_regular_session(state) {
+        return ExtendedHours::Hidden;
+    }
+    let Some(regular_close) = regular_close else {
+        return ExtendedHours::Unavailable;
+    };
+    match extended_hours_line_from_bars(bars, state, regular_close) {
+        Some(line) => ExtendedHours::Line(line),
+        None => ExtendedHours::Unavailable,
+    }
+}
+
+fn print_extended_hours(section: &ExtendedHours) {
+    match section {
+        ExtendedHours::Hidden => {}
+        ExtendedHours::Unavailable => println!("Extended hours unavailable"),
+        ExtendedHours::Line(line) => println!("{line}"),
+    }
+}
+
+async fn fetch_extended_bars(ticker: &Ticker) -> Result<Vec<Candle>> {
+    let today = Utc::now().with_timezone(&New_York).date_naive();
+    // 1-minute bars. `Interval::M1` is one month, not one minute.
+    let today_bars = ticker
+        .history(Some(Range::D1), Some(Interval::I1m), true)
+        .await?;
+    if bars_on_date(&today_bars, today) {
+        return Ok(today_bars);
+    }
+    let wider_bars = ticker
+        .history(Some(Range::D5), Some(Interval::I1m), true)
+        .await?;
+    Ok(choose_intraday_bars(&today_bars, &wider_bars, today).to_vec())
+}
+
+async fn extended_hours_section(
+    ticker: &Ticker,
+    quote: Option<&Quote>,
+    regular: Option<&Candle>,
+) -> ExtendedHours {
+    let state = quote.and_then(|q| q.market_state.as_ref());
+    let Some(state) = state else {
+        return ExtendedHours::Hidden;
+    };
+    if is_regular_session(state) {
+        return ExtendedHours::Hidden;
+    }
+    let bars = match fetch_extended_bars(ticker).await {
+        Ok(bars) => bars,
+        Err(_) => return ExtendedHours::Unavailable,
+    };
+    extended_hours_output(Some(state), &bars, regular.map(close))
 }
 
 fn display_plot(quotes: &[Candle]) {
@@ -496,14 +726,17 @@ fn sortino_ratio(returns: &[f64], risk_free_annual: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        calc_returns, format_eastern, format_money, format_return_cell, format_sortino,
-        format_volume, get_price_range, localized_or_canonical, resolve_risk_free_rate,
-        rounded_price, sortino_ratio, year_end,
+        bars_on_date, calc_returns, choose_intraday_bars, close, extended_hours_line_from_bars,
+        extended_hours_output, extended_session, format_eastern, format_et_clock,
+        format_extended_hours_line, format_money, format_return_cell, format_sortino,
+        format_volume, get_price_range, localized_or_canonical, percent_vs_close,
+        resolve_risk_free_rate, rounded_price, sortino_ratio, year_end, ExtendedHours,
+        SessionLabel,
     };
     use chrono::TimeZone;
     use paft_money::{Currency, IsoCurrency, Money, PriceAmount, QuantityAmount};
     use rust_decimal::Decimal;
-    use yfinance_rs::{Candle, Ohlc};
+    use yfinance_rs::{Candle, MarketState, Ohlc};
 
     fn usd_currency() -> Currency {
         Currency::Iso(IsoCurrency::USD)
@@ -515,10 +748,30 @@ mod tests {
 
     fn candle(low: &str, high: &str, close: &str) -> Candle {
         let ts = chrono::Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+        candle_at(ts, low, high, close)
+    }
+
+    fn candle_at(ts: chrono::DateTime<chrono::Utc>, low: &str, high: &str, close: &str) -> Candle {
         let ohlc = Ohlc::new(price(close), price(high), price(low), price(close));
         let mut candle = Candle::new(ts, usd_currency(), ohlc);
         candle.volume = Some(QuantityAmount::from_decimal(Decimal::ONE).unwrap());
         candle
+    }
+
+    fn utc(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+    ) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .unwrap()
+    }
+
+    fn dec(amount: &str) -> Decimal {
+        Decimal::from_str_exact(amount).unwrap()
     }
 
     #[test]
@@ -682,6 +935,191 @@ mod tests {
         assert_eq!(format_return_cell(f64::INFINITY), "");
         assert_eq!(format_return_cell(0.2), " 20.00");
         assert_eq!(format_return_cell(-0.25), "-25.00");
+    }
+
+    #[test]
+    fn after_hours_line_uses_the_post_state_and_the_latest_extended_bar() {
+        // 2026-05-20 23:28 UTC is 7:28 PM EDT. The later regular bar is ignored,
+        // and the after-hours bar is not the last element.
+        let bars = vec![
+            candle_at(utc(2026, 5, 20, 18, 0), "99", "101", "100.10"),
+            candle_at(utc(2026, 5, 20, 23, 28), "100", "101", "100.40"),
+            candle_at(utc(2026, 5, 20, 19, 59), "99", "101", "100.20"),
+        ];
+
+        let line = extended_hours_line_from_bars(&bars, &MarketState::Post, dec("100.00"))
+            .expect("after-hours bar");
+
+        assert_eq!(
+            line,
+            "After-hours: $100.40 (+0.40% vs close) as of 7:28 PM ET"
+        );
+    }
+
+    #[test]
+    fn pre_market_line_uses_the_pre_state() {
+        // 2026-05-20 12:15 UTC is 8:15 AM EDT. The later 9:30 bar is the open.
+        let bars = vec![
+            candle_at(utc(2026, 5, 19, 23, 0), "100", "102", "101.00"),
+            candle_at(utc(2026, 5, 20, 12, 15), "99", "100", "99.60"),
+            candle_at(utc(2026, 5, 20, 13, 30), "99", "100", "99.70"),
+        ];
+
+        let line = extended_hours_line_from_bars(&bars, &MarketState::Pre, dec("100"))
+            .expect("pre-market bar");
+
+        assert_eq!(
+            line,
+            "Pre-market: $99.60 (-0.40% vs close) as of 8:15 AM ET"
+        );
+    }
+
+    #[test]
+    fn closed_and_halted_markets_take_the_label_from_the_bar_clock() {
+        let after = [candle_at(utc(2026, 5, 20, 23, 28), "100", "101", "100.40")];
+        let pre = [candle_at(utc(2026, 5, 20, 12, 15), "99", "100", "99.60")];
+        let both = [
+            candle_at(utc(2026, 5, 20, 12, 15), "99", "100", "99.60"),
+            candle_at(utc(2026, 5, 20, 23, 28), "100", "101", "100.40"),
+        ];
+
+        let after_line =
+            extended_hours_line_from_bars(&after, &MarketState::Closed, dec("100")).unwrap();
+        let pre_line =
+            extended_hours_line_from_bars(&pre, &MarketState::Halted, dec("100")).unwrap();
+        let latest =
+            extended_hours_line_from_bars(&both, &MarketState::Closed, dec("100")).unwrap();
+
+        assert_eq!(
+            after_line,
+            "After-hours: $100.40 (+0.40% vs close) as of 7:28 PM ET"
+        );
+        assert_eq!(
+            pre_line,
+            "Pre-market: $99.60 (-0.40% vs close) as of 8:15 AM ET"
+        );
+        assert_eq!(latest, after_line);
+    }
+
+    #[test]
+    fn extended_hours_line_is_absent_without_an_extended_bar_or_a_close() {
+        assert!(extended_hours_line_from_bars(&[], &MarketState::Post, dec("100")).is_none());
+
+        let regular = [candle_at(utc(2026, 5, 20, 18, 0), "99", "101", "100.40")];
+        assert!(extended_hours_line_from_bars(&regular, &MarketState::Post, dec("100")).is_none());
+        assert!(
+            extended_hours_line_from_bars(&regular, &MarketState::Closed, dec("100")).is_none()
+        );
+        assert!(format_extended_hours_line(
+            SessionLabel::AfterHours,
+            dec("100.40"),
+            &usd_currency(),
+            Decimal::ZERO,
+            utc(2026, 5, 20, 23, 28),
+        )
+        .is_none());
+        assert_eq!(percent_vs_close(dec("100.40"), Decimal::ZERO), None);
+        assert!((percent_vs_close(dec("100.40"), dec("100")).unwrap() - 0.40).abs() < 1e-12);
+        assert!((percent_vs_close(dec("99.60"), dec("100")).unwrap() - -0.40).abs() < 1e-12);
+    }
+
+    #[test]
+    fn regular_session_stays_quiet_and_a_missing_print_is_unavailable() {
+        let bars = [candle_at(utc(2026, 5, 20, 23, 28), "100", "101", "100.40")];
+
+        assert_eq!(
+            extended_hours_output(None, &bars, Some(dec("100"))),
+            ExtendedHours::Hidden
+        );
+        assert_eq!(
+            extended_hours_output(Some(&MarketState::Regular), &bars, Some(dec("100"))),
+            ExtendedHours::Hidden
+        );
+        assert_eq!(
+            extended_hours_output(Some(&MarketState::Post), &[], Some(dec("100"))),
+            ExtendedHours::Unavailable
+        );
+        assert_eq!(
+            extended_hours_output(Some(&MarketState::Post), &bars, None),
+            ExtendedHours::Unavailable
+        );
+        assert_eq!(
+            extended_hours_output(Some(&MarketState::Post), &bars, Some(dec("100"))),
+            ExtendedHours::Line(
+                "After-hours: $100.40 (+0.40% vs close) as of 7:28 PM ET".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn extended_hours_clock_follows_eastern_time_across_dst() {
+        // May is daylight saving time: EDT is UTC-4.
+        assert_eq!(format_et_clock(utc(2026, 5, 20, 23, 28)), "7:28 PM ET");
+        // January is standard time: EST is UTC-5. 00:28 UTC is 7:28 PM the evening before.
+        assert_eq!(format_et_clock(utc(2026, 1, 15, 0, 28)), "7:28 PM ET");
+        // Spring forward on 2026-03-08 at 2:00 AM local.
+        assert_eq!(format_et_clock(utc(2026, 3, 8, 6, 59)), "1:59 AM ET");
+        assert_eq!(format_et_clock(utc(2026, 3, 8, 7, 0)), "3:00 AM ET");
+        // Fall back on 2026-11-01: 1:30 AM occurs on both offsets.
+        assert_eq!(format_et_clock(utc(2026, 11, 1, 5, 30)), "1:30 AM ET");
+        assert_eq!(format_et_clock(utc(2026, 11, 1, 6, 30)), "1:30 AM ET");
+        assert_eq!(format_et_clock(utc(2026, 5, 20, 16, 0)), "12:00 PM ET");
+        assert_eq!(format_et_clock(utc(2026, 1, 15, 5, 0)), "12:00 AM ET");
+    }
+
+    #[test]
+    fn session_clock_splits_at_the_open_and_the_close() {
+        // EDT boundaries on 2026-05-20.
+        assert_eq!(
+            extended_session(utc(2026, 5, 20, 13, 29)),
+            Some(SessionLabel::PreMarket)
+        );
+        assert_eq!(extended_session(utc(2026, 5, 20, 13, 30)), None);
+        assert_eq!(extended_session(utc(2026, 5, 20, 19, 59)), None);
+        assert_eq!(
+            extended_session(utc(2026, 5, 20, 20, 0)),
+            Some(SessionLabel::AfterHours)
+        );
+        // The same local times in EST, 2026-01-14.
+        assert_eq!(
+            extended_session(utc(2026, 1, 14, 14, 29)),
+            Some(SessionLabel::PreMarket)
+        );
+        assert_eq!(extended_session(utc(2026, 1, 14, 14, 30)), None);
+        assert_eq!(
+            extended_session(utc(2026, 1, 14, 21, 0)),
+            Some(SessionLabel::AfterHours)
+        );
+    }
+
+    #[test]
+    fn intraday_range_widens_when_today_has_no_bars() {
+        let friday = utc(2026, 5, 15, 20, 0);
+        let saturday = chrono::NaiveDate::from_ymd_opt(2026, 5, 16).unwrap();
+        let friday_bars = [candle_at(friday, "9", "11", "10")];
+        assert!(!bars_on_date(&friday_bars, saturday));
+        assert!(bars_on_date(
+            &friday_bars,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap()
+        ));
+
+        let today = [candle_at(utc(2026, 5, 15, 20, 0), "10", "12", "11")];
+        let wider = [candle_at(utc(2026, 5, 14, 20, 0), "8", "10", "9")];
+        assert_eq!(
+            close(&choose_intraday_bars(&today, &wider, saturday)[0]),
+            dec("9")
+        );
+        assert_eq!(
+            close(
+                &choose_intraday_bars(
+                    &today,
+                    &wider,
+                    chrono::NaiveDate::from_ymd_opt(2026, 5, 15).unwrap()
+                )[0]
+            ),
+            dec("11")
+        );
+        assert!(choose_intraday_bars(&[], &[], saturday).is_empty());
     }
 
     #[test]
